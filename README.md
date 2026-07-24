@@ -10,6 +10,8 @@ Full-stack human-computer interaction project for gesture recognition using a Re
 - `docker/`: containerization files.
 
 ## Quick Start
-1. Start backend.
-2. Start frontend.
-3. Open the app, allow webcam access, and test gesture controls.
+To run the entire application (both frontend and backend) instantly, simply open your terminal in the project root and run:
+```bash
+bash start.sh
+```
+This will automatically launch the servers. Then, open [http://localhost:5173/](http://localhost:5173/) in your browser, allow webcam access, and start using gestures!
