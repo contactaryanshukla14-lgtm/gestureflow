@@ -12,5 +12,10 @@ if [ ! -d "backend/venv" ]; then
     bash scripts/setup.sh
 fi
 
-# Execute the main run script
-bash scripts/run_local.sh
+# Install root dependencies (concurrently)
+if [ ! -d "node_modules" ]; then
+    npm install
+fi
+
+# Execute via npm start
+npm start
