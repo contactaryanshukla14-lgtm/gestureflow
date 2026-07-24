@@ -17,5 +17,5 @@ if [ ! -d "node_modules" ]; then
     npm install
 fi
 
-# Execute via npm start
-npm start
+# Execute via npm run dev
+npm run dev

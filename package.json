@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "start:backend": "cd backend && venv/Scripts/python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
-    "start:frontend": "cd frontend && npm run dev -- --host 0.0.0.0 --port 5173",
-    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\""
+    "dev:backend": "cd backend && venv/Scripts/python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:frontend": "cd frontend && npm run dev -- --host 0.0.0.0 --port 5173",
+    "dev": "npx --yes concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
