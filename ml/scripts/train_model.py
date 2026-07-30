@@ -28,8 +28,9 @@ def train():
     X_test = test_df.drop(columns=['label', 'split']).values
     y_test = test_df['label'].values
     
-    print("Training RandomForestClassifier...")
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    from sklearn.neural_network import MLPClassifier
+    print("Training MLPClassifier...")
+    clf = MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=1000, random_state=42, early_stopping=True)
     clf.fit(X_train, y_train)
     
     if len(X_test) > 0:

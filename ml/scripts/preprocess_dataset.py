@@ -34,9 +34,21 @@ def extract_features(img_path):
         return None
     
     landmarks = results.hand_landmarks[0]
+    
+    # Calculate normalization scale (distance from wrist to middle finger MCP)
+    dx = landmarks[0].x - landmarks[9].x
+    dy = landmarks[0].y - landmarks[9].y
+    dz = landmarks[0].z - landmarks[9].z
+    scale = (dx**2 + dy**2 + dz**2)**0.5
+    if scale < 1e-6:
+        scale = 1.0
+        
     features = []
     for lm in landmarks:
-        features.extend([lm.x, lm.y, lm.z])
+        nx = (lm.x - landmarks[0].x) / scale
+        ny = (lm.y - landmarks[0].y) / scale
+        nz = (lm.z - landmarks[0].z) / scale
+        features.extend([nx, ny, nz])
     return features
 
 def split_and_extract():

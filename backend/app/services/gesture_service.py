@@ -19,28 +19,55 @@ ACTION_MAP = {
     'thumbs_down': 'open_vscode'
 }
 
-from collections import deque
-_gesture_buffer = deque(maxlen=5)
+from collections import deque, Counter
+import math
+_gesture_buffer = deque(maxlen=3)
 _last_stable_gesture = 'none'
 
 import urllib.request
 
-MODEL_ASSET_PATH = Path(__file__).resolve().parent / "hand_landmarker.task"
-if not MODEL_ASSET_PATH.exists():
-    print("Downloading hand_landmarker.task...")
-    urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", MODEL_ASSET_PATH)
+_detector = None
+_model = None
+_model_attempted = False
 
-base_options = mp.tasks.BaseOptions(model_asset_path=str(MODEL_ASSET_PATH))
-options = mp.tasks.vision.HandLandmarkerOptions(base_options=base_options, num_hands=1)
-detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
+def get_detector():
+    global _detector
+    if _detector is None:
+        try:
+            import tempfile
+            MODEL_ASSET_PATH = Path(tempfile.gettempdir()) / "hand_landmarker.task"
+            if not MODEL_ASSET_PATH.exists():
+                print("Downloading hand_landmarker.task...")
+                urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", MODEL_ASSET_PATH)
 
-MODEL_PATH = Path(__file__).resolve().parent.parent.parent.parent / 'ml' / 'models' / 'active' / 'gesture_model.joblib'
-model = None
-if MODEL_PATH.exists():
-    try:
-        model = joblib.load(MODEL_PATH)
-    except Exception as e:
-        print("Failed to load model:", e)
+            base_options = mp.tasks.BaseOptions(model_asset_path=str(MODEL_ASSET_PATH))
+            options = mp.tasks.vision.HandLandmarkerOptions(base_options=base_options, num_hands=1)
+            _detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
+        except Exception as e:
+            print("Error initializing HandLandmarker:", e)
+    return _detector
+
+def get_model():
+    global _model, _model_attempted
+    if not _model_attempted:
+        _model_attempted = True
+        MODEL_PATH = Path(__file__).resolve().parent.parent.parent.parent / 'ml' / 'models' / 'active' / 'gesture_model.joblib'
+        if MODEL_PATH.exists():
+            try:
+                _model = joblib.load(MODEL_PATH)
+            except Exception as e:
+                print("Failed to load model:", e)
+    return _model
+
+def warmup_models():
+    """Asynchronously warm up detector and model after server startup."""
+    import threading
+    def _warmup():
+        print("Warming up ML models in background...")
+        get_detector()
+        get_model()
+        print("ML models warmup complete.")
+    threading.Thread(target=_warmup, daemon=True).start()
 
 def get_dataset_summary():
     raw_dir = Path(__file__).resolve().parent.parent.parent.parent / 'ml' / 'data' / 'raw'
@@ -57,42 +84,60 @@ def get_dataset_summary():
 DATASET_SUMMARY = get_dataset_summary() # Initial load, though it would be better as a dynamic property
 
 def heuristic_predict(landmarks):
-    def is_finger_up(tip_idx, pip_idx):
-        return landmarks[tip_idx].y < landmarks[pip_idx].y
-    
-    index_up = is_finger_up(8, 6)
-    middle_up = is_finger_up(12, 10)
-    ring_up = is_finger_up(16, 14)
-    pinky_up = is_finger_up(20, 18)
-    
-    fingers = [index_up, middle_up, ring_up, pinky_up]
-    
-    # Robust thumb logic
-    index_base_y = landmarks[5].y
-    pinky_base_y = landmarks[17].y
-    thumb_tip_y = landmarks[4].y
-    
-    thumb_up = thumb_tip_y < index_base_y - 0.05
-    thumb_down = thumb_tip_y > pinky_base_y + 0.05
-    
-    if fingers == [True, True, True, True]:
-        return 'open_palm'
-    elif fingers == [False, True, True, True]:
-        return 'ok_sign'
-    elif fingers == [True, True, False, False]:
-        return 'peace'
-    elif fingers == [True, False, False, False]:
-        return 'index_up'
-    elif fingers == [True, False, False, True]:
-        return 'metal'
-    elif fingers == [False, False, False, True]:
-        return 'pinky_up'
-    elif fingers == [False, False, False, False]:
-        if thumb_up:
-            return 'thumbs_up'
-        elif thumb_down:
-            return 'thumbs_down'
+    # Calculate palm size (wrist to middle finger MCP) for scale invariance
+    dx = landmarks[0].x - landmarks[9].x
+    dy = landmarks[0].y - landmarks[9].y
+    dz = landmarks[0].z - landmarks[9].z
+    palm_size = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if palm_size < 1e-5:
+        return 'none'
         
+    def dist(i, j):
+        return math.sqrt((landmarks[i].x - landmarks[j].x)**2 + 
+                         (landmarks[i].y - landmarks[j].y)**2 + 
+                         (landmarks[i].z - landmarks[j].z)**2) / palm_size
+
+    # Check finger extensions (tip further from wrist than PIP & MCP is)
+    index_ext = dist(8, 0) > dist(6, 0) and dist(8, 5) > dist(6, 5) * 1.05
+    middle_ext = dist(12, 0) > dist(10, 0) and dist(12, 9) > dist(10, 9) * 1.05
+    ring_ext = dist(16, 0) > dist(14, 0) and dist(16, 13) > dist(14, 13) * 1.05
+    pinky_ext = dist(20, 0) > dist(18, 0) and dist(20, 17) > dist(18, 17) * 1.05
+    
+    # Check thumb extension (tip further from pinky base or wrist than thumb MCP is)
+    thumb_ext = dist(4, 17) > dist(2, 17) * 1.05 and dist(4, 0) > dist(2, 0) * 1.02
+
+    # 1. OK Sign (Thumb and Index tip touching, other 3 extended)
+    if dist(4, 8) < 0.5 and middle_ext and ring_ext and pinky_ext:
+        return 'ok_sign'
+        
+    # 2. Open Palm (All 4 fingers extended)
+    if index_ext and middle_ext and ring_ext and pinky_ext:
+        return 'open_palm'
+        
+    # 3. Peace Sign (Index & Middle extended, Ring & Pinky curled)
+    if index_ext and middle_ext and not ring_ext and not pinky_ext:
+        return 'peace'
+        
+    # 4. Metal (Index & Pinky extended, Middle & Ring curled)
+    if index_ext and pinky_ext and not middle_ext and not ring_ext:
+        return 'metal'
+        
+    # 5. Index Up (Only Index extended)
+    if index_ext and not middle_ext and not ring_ext and not pinky_ext:
+        return 'index_up'
+        
+    # 6. Pinky Up (Only Pinky extended)
+    if pinky_ext and not index_ext and not middle_ext and not ring_ext:
+        return 'pinky_up'
+        
+    # 7. Thumbs Up / Down (4 main fingers curled, thumb extended vertically)
+    if not index_ext and not middle_ext and not ring_ext and not pinky_ext:
+        # y increases downwards in image coordinates
+        if landmarks[4].y < landmarks[5].y - 0.04 and landmarks[4].y < landmarks[0].y - 0.04:
+            return 'thumbs_up'
+        elif landmarks[4].y > landmarks[5].y + 0.04 and landmarks[4].y > landmarks[0].y + 0.04:
+            return 'thumbs_down'
+
     return 'none'
 
 def infer_gesture(sample_label: str | None, image_b64: str | None = None):
@@ -110,32 +155,60 @@ def infer_gesture(sample_label: str | None, image_b64: str | None = None):
             if img is not None:
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-                results = detector.detect(mp_image)
+                det = get_detector()
+                if not det:
+                    return {'label': 'none', 'confidence': 0.0, 'action': 'none'}
+                results = det.detect(mp_image)
                 
                 if results.hand_landmarks:
                     landmarks = results.hand_landmarks[0]
 
-                    if model is not None:
+                    mod = get_model()
+                    if mod is not None:
+                        # Normalize landmarks relative to wrist and scale
+                        dx = landmarks[0].x - landmarks[9].x
+                        dy = landmarks[0].y - landmarks[9].y
+                        dz = landmarks[0].z - landmarks[9].z
+                        scale = (dx**2 + dy**2 + dz**2)**0.5
+                        if scale < 1e-6:
+                            scale = 1.0
+                            
                         features = []
                         for lm in landmarks:
-                            features.extend([lm.x, lm.y, lm.z])
-                        pred = model.predict([features])[0]
-                        probs = model.predict_proba([features])[0]
+                            nx = (lm.x - landmarks[0].x) / scale
+                            ny = (lm.y - landmarks[0].y) / scale
+                            nz = (lm.z - landmarks[0].z) / scale
+                            features.extend([nx, ny, nz])
+                        
+                        pred = mod.predict([features])[0]
+                        probs = mod.predict_proba([features])[0]
                         raw_label = pred
                         confidence = float(max(probs))
                     else:
                         raw_label = heuristic_predict(landmarks)
-                        confidence = 0.8
+                        confidence = 0.95 if raw_label != 'none' else 0.5
                         
-                    _gesture_buffer.append(raw_label)
+                    _gesture_buffer.append((raw_label, confidence))
                     global _last_stable_gesture
-                    if len(_gesture_buffer) == 5 and all(x == raw_label for x in _gesture_buffer):
-                        _last_stable_gesture = raw_label
+                    
+                    # Responsive 3-frame consensus to eliminate single-frame glitch without lag
+                    labels = [lbl for lbl, _ in _gesture_buffer]
+                    counts = Counter(labels)
+                    most_common, count = counts.most_common(1)[0]
+                    
+                    if most_common != 'none' and count >= 2:
+                        _last_stable_gesture = most_common
+                    elif most_common == 'none' and count >= 2:
+                        _last_stable_gesture = 'none'
                     
                     label = _last_stable_gesture
+                    # Boost confidence when stable
+                    if label != 'none' and label == raw_label:
+                        confidence = max(confidence, 0.98)
                 else:
-                    _gesture_buffer.append('none')
-                    if len(_gesture_buffer) == 5 and all(x == 'none' for x in _gesture_buffer):
+                    _gesture_buffer.append(('none', 0.0))
+                    labels = [lbl for lbl, _ in _gesture_buffer]
+                    if labels.count('none') >= 2:
                         _last_stable_gesture = 'none'
                     label = _last_stable_gesture
                     confidence = 0.99

@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { useWebcam } from '../hooks/useWebcam';
 
 export default function WebcamPanel({ onFrame }) {
-  const { videoRef, error } = useWebcam();
+  const { videoRef, error, retry } = useWebcam();
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -19,7 +19,7 @@ export default function WebcamPanel({ onFrame }) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
         // Get base64 jpeg
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
         onFrame(dataUrl);
       }
     }, 100); // 10 FPS
@@ -28,10 +28,20 @@ export default function WebcamPanel({ onFrame }) {
   }, [onFrame, videoRef]);
 
   return (
-    <section className="card">
+    <section className="card webcam-card">
       <h2>Live Camera</h2>
-      {error && <p className="error">{error}</p>}
-      <video ref={videoRef} autoPlay playsInline muted className="video" />
+      {error && (
+        <div className="error-box">
+          <p className="error-title">⚠️ Webcam Connection Error</p>
+          <p className="error-msg">{error}</p>
+          <button onClick={retry} className="retry-btn">
+            🔄 Retry Camera Connection
+          </button>
+        </div>
+      )}
+      <div className="video-wrapper" style={{ display: error ? 'none' : 'block' }}>
+        <video ref={videoRef} autoPlay playsInline muted className="video" />
+      </div>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
     </section>
   );
